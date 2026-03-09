@@ -469,7 +469,7 @@
 
         <div class="panel">
           <h2>
-            <span>Top 10 oldest open tickets</span>
+            <span>Oldest open tickets</span>
             <span class="small" id="oldestMeta">Sort: created</span>
           </h2>
 
@@ -528,7 +528,7 @@
   </div>
 
 <script>
-  const ASSIGNEE_TOP_N = 12;
+  const ASSIGNEE_TOP_N = null;
 
   const syncBtn = document.getElementById("syncBtn");
   const syncDot = document.getElementById("syncDot");
@@ -748,7 +748,7 @@
       const [overview, byAssignee, oldestCreated, timeByProject, syncStatus] = await Promise.all([
         fetchJson("/stats/overview"),
         fetchJson("/stats/by_assignee?only_open=true"),
-        fetchJson("/stats/top_oldest_open?limit=10&sort=created"),
+        fetchJson("/stats/top_oldest_open?limit=200&sort=created"),
         fetchJson("/stats/time_by_project"),
         fetchSyncStatus()
       ]);
@@ -764,8 +764,8 @@
       const assignees = Array.isArray(byAssignee) ? byAssignee.slice() : [];
       assignees.sort((a,b) => Number(b.open_count || 0) - Number(a.open_count || 0));
 
-      const topAssignees = assignees.slice(0, ASSIGNEE_TOP_N);
-      assigneeMeta.textContent = `Top ${topAssignees.length} (by open)` + (assignees.length > topAssignees.length ? ` • +${assignees.length - topAssignees.length} hidden` : "");
+      const topAssignees = ASSIGNEE_TOP_N ? assignees.slice(0, ASSIGNEE_TOP_N) : assignees;
+      assigneeMeta.textContent = `${topAssignees.length} assignees • Sorted by open`;
 
       if (!topAssignees.length) {
         assigneeBody.innerHTML = `<tr><td colspan="4" class="muted">No data</td></tr>`;
@@ -808,7 +808,7 @@
       if (!oldestList.length) {
         oldestBody.innerHTML = `<tr><td colspan="5" class="muted">No open tickets</td></tr>`;
       } else {
-        for (const row of oldestList.slice(0, 10)) {
+        for (const row of oldestList) {
           const tr = document.createElement("tr");
           tr.className = ageRowClass(row.age_hours);
 

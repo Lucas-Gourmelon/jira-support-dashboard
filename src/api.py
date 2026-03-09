@@ -490,7 +490,7 @@ def stats_by_assignee(
 
 @app.get("/stats/top_oldest_open")
 def stats_top_oldest_open(
-    limit: int = Query(10, ge=1, le=200),
+    limit: int = Query(200, ge=1, le=10000),
     sort: str = Query("created", pattern="^(created|updated)$"),
 ) -> List[Dict[str, Any]]:
     db_path = get_sqlite_path()
