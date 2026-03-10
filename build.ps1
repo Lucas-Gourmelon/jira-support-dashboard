@@ -3,6 +3,7 @@ Remove-Item jira-support-dashboard.spec -ErrorAction Ignore
 
 pyinstaller --onefile --name jira-support-dashboard `
 --add-data "templates;templates" `
+--add-data "static;static" `
 --hidden-import src.api `
 --hidden-import src.config `
 --hidden-import src.db `
