@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sqlite3
@@ -10,9 +11,11 @@ import unicodedata
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from collections import deque
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
@@ -20,7 +23,6 @@ from .config import get_sqlite_path, load_settings
 from .db import IssuesRepository
 from .jira_client import JiraClient
 from .sync import run_sync
-from fastapi.staticfiles import StaticFiles
 
 if getattr(sys, "frozen", False):
     BASE_DIR = sys._MEIPASS
@@ -46,6 +48,23 @@ if not any(isinstance(h, logging.FileHandler) and h.baseFilename == os.path.absp
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
+class InMemoryLogHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+        except Exception:
+            msg = record.getMessage()
+        _push_live_log(msg)
+
+
+if not any(isinstance(h, InMemoryLogHandler) for h in logger.handlers):
+    memory_handler = InMemoryLogHandler()
+    memory_handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    logger.addHandler(memory_handler)
+
+SYNC_INTERVAL_SECONDS = int(os.getenv("AUTO_SYNC_INTERVAL_SECONDS", "120"))
+REFRESH_INTERVAL_SECONDS = int(os.getenv("AUTO_REFRESH_SECONDS", "10"))
+
 _status_lock = threading.Lock()
 _is_running = False
 
@@ -58,23 +77,13 @@ _last_status: Dict[str, Any] = {
     "is_running": False,
 }
 
+_live_log_lock = threading.Lock()
+_live_log_lines = deque(maxlen=200)
+
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 STATIC_DIR = os.path.join(BASE_DIR, "static")
-
-DEFAULT_CLOSED_STATUSES = [
-    "fermé",
-    "fermée",
-    "terminé",
-    "terminée",
-    "résolu",
-    "résolue",
-    "closed",
-    "resolved",
-    "done",
-]
-
 
 STATUS_FAMILY_LABELS = [
     "Open",
@@ -82,7 +91,6 @@ STATUS_FAMILY_LABELS = [
     "Analyse Luxtrust",
     "Closed",
 ]
-
 
 STATUS_FAMILY_MAP: Dict[str, str] = {
     "declared": "Open",
@@ -95,12 +103,10 @@ STATUS_FAMILY_MAP: Dict[str, str] = {
     "planned": "Open",
     "planne": "Open",
     "prevu": "Open",
-
     "no customer answer": "Analyse Client",
     "waiting for customer": "Analyse Client",
     "en attente du client": "Analyse Client",
     "analyse client": "Analyse Client",
-
     "escalated": "Analyse Luxtrust",
     "in progress": "Analyse Luxtrust",
     "estimated lt": "Analyse Luxtrust",
@@ -114,7 +120,6 @@ STATUS_FAMILY_MAP: Dict[str, str] = {
     "quote": "Analyse Luxtrust",
     "analyse luxtrust": "Analyse Luxtrust",
     "en cours": "Analyse Luxtrust",
-
     "done": "Closed",
     "pre completed": "Closed",
     "cancelled": "Closed",
@@ -131,6 +136,13 @@ STATUS_FAMILY_MAP: Dict[str, str] = {
     "termine e": "Closed",
 }
 
+STATUS_FAMILY_ORDER = {
+    "Open": 0,
+    "Analyse Client": 1,
+    "Analyse Luxtrust": 2,
+    "Closed": 3,
+}
+
 
 def _set_status(**updates: Any) -> None:
     global _last_status
@@ -143,17 +155,33 @@ def _get_status() -> Dict[str, Any]:
         return dict(_last_status)
 
 
+def _push_live_log(message: str) -> None:
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    line = f"{timestamp} • {message}"
+    with _live_log_lock:
+        _live_log_lines.append(line)
+
+
+def _get_live_logs(limit: int = 4) -> List[str]:
+    with _live_log_lock:
+        if limit <= 0:
+            return []
+        return list(_live_log_lines)[-limit:]
+    
+
 def _run_sync_job() -> None:
     global _is_running
     started = time.perf_counter()
     started_at_iso = datetime.now(timezone.utc).isoformat()
 
     _set_status(is_running=True, last_error=None)
+    _push_live_log("Sync started")
     logger.info("Sync started")
 
     try:
         settings = load_settings()
 
+        logger.info("Loading settings")
         logger.info("JQL used for sync: %s", settings.jql)
         logger.info("SQLite path: %s", settings.sqlite_path)
 
@@ -163,6 +191,10 @@ def _run_sync_job() -> None:
             api_token=settings.jira_api_token,
         )
         repo = IssuesRepository(settings.sqlite_path)
+
+        logger.info("Jira client initialized")
+        logger.info("Repository initialized")
+        logger.info("Fetching Jira issues...")
 
         stats = run_sync(
             jira=jira,
@@ -186,6 +218,9 @@ def _run_sync_job() -> None:
             stats.get("upserted", 0),
             duration_ms,
         )
+        _push_live_log(
+            f"Sync finished • {int(stats.get('upserted', 0))} issues • {duration_ms} ms"
+        )
     except Exception as e:
         duration_ms = int((time.perf_counter() - started) * 1000)
 
@@ -198,6 +233,7 @@ def _run_sync_job() -> None:
             is_running=False,
         )
         logger.exception("Sync failed: %s", e)
+        _push_live_log(f"Sync failed • {e}")
     finally:
         with _status_lock:
             _is_running = False
@@ -215,6 +251,22 @@ def _try_start_sync() -> bool:
     t = threading.Thread(target=_run_sync_job, name="jira-sync", daemon=True)
     t.start()
     return True
+
+
+async def _auto_sync_loop() -> None:
+    logger.info("Auto-sync loop started with interval=%s seconds", SYNC_INTERVAL_SECONDS)
+
+    while True:
+        await asyncio.sleep(SYNC_INTERVAL_SECONDS)
+
+        try:
+            started = _try_start_sync()
+            if started:
+                logger.info("Auto-sync triggered")
+            else:
+                logger.info("Auto-sync skipped because a sync is already running")
+        except Exception as e:
+            logger.exception("Auto-sync trigger failed: %s", e)
 
 
 def _normalize_for_match(value: Optional[str]) -> str:
@@ -273,20 +325,19 @@ def _map_status_to_family(value: Optional[str]) -> str:
     return f"Other: {raw_label}"
 
 
-def _get_closed_statuses_normalized() -> set[str]:
-    raw = os.getenv("CLOSED_STATUS_LIST", "").strip()
-    if not raw:
-        items = DEFAULT_CLOSED_STATUSES
-    else:
-        items = [x for x in raw.split(",")]
+def _status_family_rank(family: str) -> int:
+    return STATUS_FAMILY_ORDER.get(family, 999)
 
-    out: set[str] = set()
-    for x in items:
-        nx = _normalize_for_match(x)
-        if nx:
-            out.add(nx)
-    return out
 
+def _status_sort_key(status_value: Optional[str]) -> tuple[int, str, str]:
+    raw_label = _display_status_label(status_value)
+    family = _map_status_to_family(status_value)
+    return (
+        _status_family_rank(family),
+        family.lower(),
+        raw_label.lower(),
+    )
+    
 
 def _parse_jira_dt(value: Optional[str]) -> Optional[datetime]:
     if not value:
@@ -313,6 +364,13 @@ def _age_hours(now_utc: datetime, then_utc: datetime) -> int:
     return int(seconds // 3600)
 
 
+def _duration_hours(start_utc: datetime, end_utc: datetime) -> float:
+    seconds = (end_utc - start_utc).total_seconds()
+    if seconds < 0:
+        return 0.0
+    return float(seconds) / 3600.0
+
+
 def _connect_sqlite(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
@@ -323,9 +381,8 @@ def _assignee_label(value: Optional[str]) -> str:
     return value if value and value.strip() else "Unassigned"
 
 
-def _is_closed_status(status_value: Optional[str], closed_norm: set[str]) -> bool:
-    s = _normalize_for_match(status_value)
-    return bool(s) and (s in closed_norm)
+def _is_closed_status(status_value: Optional[str]) -> bool:
+    return _map_status_to_family(status_value) == "Closed"
 
 
 def _hours_from_seconds(seconds: Optional[int]) -> float:
@@ -355,21 +412,37 @@ def _issues_table_exists(path: str) -> bool:
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(app: FastAPI):
     db_path = get_sqlite_path()
     db_dir = os.path.dirname(db_path)
 
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
 
-    if not _issues_table_exists(db_path):
-        logger.info("SQLite DB or issues table missing. Starting initial sync.")
-        _try_start_sync()
+    logger.info("Application startup")
+    logger.info("Auto-sync interval configured to %s seconds", SYNC_INTERVAL_SECONDS)
 
-    yield
+    started = _try_start_sync()
+    if started:
+        logger.info("Initial sync triggered at startup")
+    else:
+        logger.info("Initial sync skipped because a sync is already running")
+
+    auto_sync_task = asyncio.create_task(_auto_sync_loop())
+    app.state.auto_sync_task = auto_sync_task
+
+    try:
+        yield
+    finally:
+        logger.info("Application shutdown")
+        auto_sync_task.cancel()
+        try:
+            await auto_sync_task
+        except asyncio.CancelledError:
+            logger.info("Auto-sync loop stopped")
 
 
-app = FastAPI(title="Jira Support Sync", version="1.4.0", lifespan=lifespan)
+app = FastAPI(title="Jira Support Sync", version="1.6.0", lifespan=lifespan)
 
 if os.path.isdir(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -393,10 +466,23 @@ def sync_status() -> Dict[str, Any]:
     return _get_status()
 
 
+@app.get("/sync/live")
+def sync_live(limit: int = Query(4, ge=1, le=20)) -> Dict[str, Any]:
+    status = _get_status()
+    return {
+        "is_running": bool(status.get("is_running")),
+        "success": status.get("success"),
+        "last_error": status.get("last_error"),
+        "lines": _get_live_logs(limit),
+    }
+
+
 @app.get("/config")
 def config_info() -> Dict[str, Any]:
     db_path = get_sqlite_path()
-    closed_statuses = sorted(_get_closed_statuses_normalized())
+    closed_statuses = sorted(
+        key for key, family in STATUS_FAMILY_MAP.items() if family == "Closed"
+    )
 
     try:
         settings = load_settings()
@@ -410,9 +496,11 @@ def config_info() -> Dict[str, Any]:
         "sqlite_path": db_path,
         "jira_jql": jql,
         "jira_page_size": page_size,
-        "closed_statuses": closed_statuses,
+        "closed_status_keys": closed_statuses,
         "status_family_map": STATUS_FAMILY_MAP,
         "status_family_labels": STATUS_FAMILY_LABELS,
+        "auto_sync_interval_seconds": SYNC_INTERVAL_SECONDS,
+        "auto_refresh_seconds": REFRESH_INTERVAL_SECONDS,
     }
 
 
@@ -420,7 +508,6 @@ def config_info() -> Dict[str, Any]:
 def stats_overview() -> Dict[str, Any]:
     db_path = get_sqlite_path()
     now = datetime.now(timezone.utc)
-    closed_norm = _get_closed_statuses_normalized()
 
     if not _issues_table_exists(db_path):
         return {
@@ -471,7 +558,7 @@ def stats_overview() -> Dict[str, Any]:
         oldest_open_updated: Optional[datetime] = None
 
         for r in rows:
-            if _is_closed_status(r["status"], closed_norm):
+            if _is_closed_status(r["status"]):
                 closed_tickets += 1
                 continue
 
@@ -538,7 +625,6 @@ def stats_by_assignee(
 ) -> List[Dict[str, Any]]:
     db_path = get_sqlite_path()
     now = datetime.now(timezone.utc)
-    closed_norm = _get_closed_statuses_normalized()
 
     if not _issues_table_exists(db_path):
         return []
@@ -560,7 +646,7 @@ def stats_by_assignee(
             entry = {"assignee": assignee, "open_count": 0, "_min_created": None, "_min_updated": None}
             agg[assignee] = entry
 
-        if _is_closed_status(r["status"], closed_norm):
+        if _is_closed_status(r["status"]):
             continue
 
         entry["open_count"] += 1
@@ -606,7 +692,6 @@ def stats_top_oldest_open(
 ) -> List[Dict[str, Any]]:
     db_path = get_sqlite_path()
     now = datetime.now(timezone.utc)
-    closed_norm = _get_closed_statuses_normalized()
 
     if not _issues_table_exists(db_path):
         return []
@@ -621,7 +706,7 @@ def stats_top_oldest_open(
 
     items: List[Dict[str, Any]] = []
     for r in rows:
-        if _is_closed_status(r["status"], closed_norm):
+        if _is_closed_status(r["status"]):
             continue
 
         dt_created = _parse_jira_dt(r["created"])
@@ -649,7 +734,6 @@ def stats_top_oldest_open(
 @app.get("/stats/time_by_project")
 def stats_time_by_project() -> List[Dict[str, Any]]:
     db_path = get_sqlite_path()
-    closed_norm = _get_closed_statuses_normalized()
 
     if not _issues_table_exists(db_path):
         return []
@@ -659,7 +743,7 @@ def stats_time_by_project() -> List[Dict[str, Any]]:
     with _connect_sqlite(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT project_key, status, time_spent_seconds
+            SELECT project_key, status, created, resolved, time_spent_seconds
             FROM issues
             """
         ).fetchall()
@@ -674,12 +758,14 @@ def stats_time_by_project() -> List[Dict[str, Any]]:
                 "open_issues": 0,
                 "closed_issues": 0,
                 "time_spent_seconds": 0,
+                "resolved_issues_with_dates": 0,
+                "resolution_total_hours": 0.0,
             }
             agg[project_key] = entry
 
         entry["total_issues"] += 1
 
-        if _is_closed_status(r["status"], closed_norm):
+        if _is_closed_status(r["status"]):
             entry["closed_issues"] += 1
         else:
             entry["open_issues"] += 1
@@ -692,9 +778,19 @@ def stats_time_by_project() -> List[Dict[str, Any]]:
         except Exception:
             pass
 
+        dt_created = _parse_jira_dt(r["created"])
+        dt_resolved = _parse_jira_dt(r["resolved"])
+        if dt_created and dt_resolved:
+            resolution_hours = _duration_hours(dt_created, dt_resolved)
+            entry["resolution_total_hours"] += resolution_hours
+            entry["resolved_issues_with_dates"] += 1
+
     out: List[Dict[str, Any]] = []
     for _, entry in agg.items():
         hours = _hours_from_seconds(entry["time_spent_seconds"])
+        resolution_count = int(entry["resolved_issues_with_dates"])
+        avg_resolution_hours = round(entry["resolution_total_hours"] / resolution_count, 1) if resolution_count > 0 else None
+
         out.append(
             {
                 "project_key": entry["project_key"],
@@ -703,6 +799,8 @@ def stats_time_by_project() -> List[Dict[str, Any]]:
                 "closed_issues": entry["closed_issues"],
                 "time_spent_seconds": entry["time_spent_seconds"],
                 "time_spent_hours": round(hours, 1),
+                "resolved_issues_with_dates": resolution_count,
+                "avg_resolution_hours": avg_resolution_hours,
             }
         )
 
@@ -719,6 +817,8 @@ def stats_status_family_distribution() -> Dict[str, Any]:
             "total_tickets": 0,
             "families": [],
             "known_families": STATUS_FAMILY_LABELS,
+            "raw_status_counts": {},
+            "raw_status_items": [],
         }
 
     family_counts: Dict[str, int] = {}
@@ -743,7 +843,10 @@ def stats_status_family_distribution() -> Dict[str, Any]:
         family_counts[family] = family_counts.get(family, 0) + 1
 
     ordered_labels = STATUS_FAMILY_LABELS[:]
-    other_labels = sorted([label for label in family_counts.keys() if label not in STATUS_FAMILY_LABELS], key=str.lower)
+    other_labels = sorted(
+        [label for label in family_counts.keys() if label not in STATUS_FAMILY_LABELS],
+        key=str.lower,
+    )
     final_labels = ordered_labels + other_labels
 
     families: List[Dict[str, Any]] = []
@@ -751,6 +854,7 @@ def stats_status_family_distribution() -> Dict[str, Any]:
         count = int(family_counts.get(label, 0))
         if count <= 0:
             continue
+
         pct = round((count / total) * 100.0, 1) if total > 0 else 0.0
         families.append(
             {
@@ -760,9 +864,23 @@ def stats_status_family_distribution() -> Dict[str, Any]:
             }
         )
 
+    raw_status_items: List[Dict[str, Any]] = []
+    for raw_label, count in raw_status_counts.items():
+        family = _map_status_to_family(raw_label)
+        raw_status_items.append(
+            {
+                "label": raw_label,
+                "family": family,
+                "count": int(count),
+            }
+        )
+
+    raw_status_items.sort(key=lambda x: _status_sort_key(x["label"]))
+
     return {
         "total_tickets": total,
         "families": families,
         "known_families": STATUS_FAMILY_LABELS,
         "raw_status_counts": raw_status_counts,
+        "raw_status_items": raw_status_items,
     }

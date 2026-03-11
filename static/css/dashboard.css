@@ -107,10 +107,160 @@ body {
   max-width: 100%;
 }
 
+.sync-error-text {
+  color: #fca5a5;
+}
+
+.sync-info-inline {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.sync-inline-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.sync-info-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 62px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.sync-info-badge.idle {
+  color: #d1d5db;
+  background: rgba(156, 163, 175, 0.12);
+  border-color: rgba(156, 163, 175, 0.24);
+}
+
+.sync-info-badge.running {
+  color: #111827;
+  background: rgba(245, 158, 11, 0.95);
+  border-color: rgba(245, 158, 11, 1);
+}
+
+.sync-info-badge.success {
+  color: #052e16;
+  background: rgba(34, 197, 94, 0.95);
+  border-color: rgba(34, 197, 94, 1);
+}
+
+.sync-info-badge.error {
+  color: #450a0a;
+  background: rgba(239, 68, 68, 0.95);
+  border-color: rgba(239, 68, 68, 1);
+}
+
+.sync-live-box {
+  margin-left: 10px;
+  min-width: 250px;
+  max-width: 320px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.sync-live-title {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.sync-live-body {
+  display: grid;
+  gap: 2px;
+}
+
+.sync-live-line {
+  font-size: 9px;
+  line-height: 1.0;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.96;
+}
+
+.sync-live-running {
+  color: var(--warn);
+}
+
+.sync-live-success {
+  color: var(--good);
+}
+
+.sync-live-error {
+  color: var(--bad);
+}
+
+.sync-pill-rich {
+  max-width: 460px;
+  overflow: hidden;
+}
+
+.sync-pill-rich #syncText,
+.sync-pill-rich #syncMeta {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.footer {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 2px 4px;
+}
+
+.footer-details {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.footer-detail-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.footer-detail-label {
+  color: var(--muted);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+#syncErrorText {
+  color: #fca5a5;
+}
+
 .header-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -276,8 +426,8 @@ tr.effort-strong td {
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.06);
   color: var(--text);
-  font-size: 12px;
-  font-weight: 800;
+  font-size: 10px;
+  font-weight: 700;
   line-height: 1;
   white-space: nowrap;
 }
@@ -326,10 +476,10 @@ tr.effort-strong td {
 
 .panel h2 {
   flex: 0 0 auto;
-  margin: 0 0 6px 0;
-  font-size: 15px;
-  font-weight: 900;
-  letter-spacing: 0.2px;
+  margin: 0 0 5px 0;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.1px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -429,10 +579,10 @@ thead th {
   background: rgba(17, 24, 39, 0.98);
   color: var(--muted);
   text-align: left;
-  padding: 7px 8px;
-  font-size: 11px;
-  font-weight: 900;
-  letter-spacing: 0.55px;
+  padding: 6px 8px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.35px;
   text-transform: uppercase;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
@@ -514,20 +664,6 @@ tbody tr:nth-child(even) {
   }
 }
 
-.footer {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--muted);
-  font-size: 11px;
-  padding: 0 2px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 @media (max-width: 1200px) {
   html,
   body {
@@ -575,5 +711,10 @@ tbody tr:nth-child(even) {
 
   .chart-panel-inner {
     min-height: 220px;
+  }
+
+  .footer {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }

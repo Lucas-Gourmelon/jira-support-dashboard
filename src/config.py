@@ -22,6 +22,7 @@ class Settings:
     jql: str
     page_size: int
     sqlite_path: str
+    auto_sync_interval_seconds: int
 
 
 def _require_env(name: str) -> str:
@@ -47,6 +48,7 @@ def load_settings() -> Settings:
     print("JQL USED:", jql)
 
     page_size_raw = os.getenv("JIRA_PAGE_SIZE", "100").strip()
+    auto_sync_interval_raw = os.getenv("AUTO_SYNC_INTERVAL_SECONDS", "120").strip()
     sqlite_path = get_sqlite_path()
 
     try:
@@ -56,6 +58,13 @@ def load_settings() -> Settings:
     except ValueError:
         raise RuntimeError("JIRA_PAGE_SIZE must be an integer between 1 and 1000")
 
+    try:
+        auto_sync_interval_seconds = int(auto_sync_interval_raw)
+        if auto_sync_interval_seconds <= 0:
+            raise ValueError()
+    except ValueError:
+        raise RuntimeError("AUTO_SYNC_INTERVAL_SECONDS must be a positive integer")
+
     return Settings(
         jira_base_url=jira_base_url,
         jira_email=jira_email,
@@ -63,4 +72,5 @@ def load_settings() -> Settings:
         jql=jql,
         page_size=page_size,
         sqlite_path=sqlite_path,
+        auto_sync_interval_seconds=auto_sync_interval_seconds,
     )

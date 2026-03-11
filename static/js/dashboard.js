@@ -4,12 +4,13 @@ const syncBtn = document.getElementById("syncBtn");
 const syncDot = document.getElementById("syncDot");
 const syncText = document.getElementById("syncText");
 const syncMeta = document.getElementById("syncMeta");
-const lastRefresh = document.getElementById("lastRefresh");
 const errorLine = document.getElementById("errorLine");
 const toggleClosed = document.getElementById("toggleClosed");
 
 const runtimeLine = document.getElementById("runtimeLine");
-const syncLine = document.getElementById("syncLine");
+const syncErrorText = document.getElementById("syncErrorText");
+const syncLiveBody = document.getElementById("syncLiveBody");
+const refreshInfoInterval = document.getElementById("refreshInfoInterval");
 
 const kpiTotal = document.getElementById("kpiTotal");
 const kpiOpen = document.getElementById("kpiOpen");
@@ -28,6 +29,19 @@ const timeByProjectWrap = document.getElementById("timeByProjectWrap");
 
 const statusFamilyMeta = document.getElementById("statusFamilyMeta");
 const statusFamilyChart = document.getElementById("statusFamilyChart");
+
+const lastRefresh = document.getElementById("lastRefresh");
+const syncInfoStatus = document.getElementById("syncInfoStatus");
+
+let refreshTimer = null;
+let refreshIntervalSeconds = 10;
+let statusChartRendered = false;
+
+let liveRefreshTimer = null;
+let liveRefreshIntervalMs = 4000;
+let lastRenderedLiveSignature = "";
+let dashboardConfig = null;
+let lastSyncStatus = null;
 
 function fmtInt(n) {
   if (n === null || n === undefined) return "—";
@@ -60,6 +74,17 @@ function fmtDateTime(value) {
   return d.toLocaleString();
 }
 
+function fmtTimeOnly(value) {
+  if (!value) return "Never";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 function setSyncPill(state, label, meta) {
   syncDot.classList.remove("good", "bad", "warn");
   syncDot.classList.add(state);
@@ -67,16 +92,39 @@ function setSyncPill(state, label, meta) {
   syncMeta.textContent = meta || "—";
 }
 
+function setSyncInfoBadge(state, label) {
+  if (!syncInfoStatus) return;
+  syncInfoStatus.className = `sync-info-badge ${state}`;
+  syncInfoStatus.textContent = label;
+}
+
 function clearError() {
-  errorLine.textContent = "";
+  if (errorLine) {
+    errorLine.textContent = "";
+  }
 }
 
 function showError(msg) {
-  errorLine.textContent = msg;
+  if (errorLine) {
+    errorLine.textContent = msg;
+  }
+}
+
+function startAutoRefresh(seconds) {
+  const parsed = Number(seconds);
+  const safeSeconds = Number.isFinite(parsed) && parsed > 0 ? parsed : 10;
+
+  refreshIntervalSeconds = safeSeconds;
+
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+  }
+
+  refreshTimer = setInterval(refreshDashboard, safeSeconds * 1000);
 }
 
 async function fetchJson(url) {
-  const res = await fetch(url, { method: "GET" });
+  const res = await fetch(url, { method: "GET", cache: "no-store" });
   if (!res.ok) {
     const txt = await res.text();
     throw new Error(`${url} -> ${res.status}: ${txt}`);
@@ -86,38 +134,23 @@ async function fetchJson(url) {
 
 async function fetchSyncStatus() {
   const data = await fetchJson("/sync/status");
-  const running = !!data.is_running;
-
-  if (running) {
-    syncBtn.disabled = true;
-    syncBtn.textContent = "Sync running…";
-    setSyncPill("warn", "Sync: running", "—");
-    return data;
-  }
-
-  syncBtn.disabled = false;
-  syncBtn.textContent = "Sync Jira";
-
-  if (data.success === true) {
-    const meta = `${fmtInt(data.upserted)} upsert • ${fmtInt(data.duration_ms)} ms`;
-    setSyncPill("good", "Sync: success", meta);
-  } else if (data.success === false) {
-    const meta = `${fmtInt(data.duration_ms)} ms`;
-    setSyncPill("bad", "Sync: failed", meta);
-  } else {
-    setSyncPill("warn", "Sync: unknown", "—");
-  }
-
+  lastSyncStatus = data;
   return data;
+}
+
+async function fetchSyncLive() {
+  return fetchJson("/sync/live?limit=3");
 }
 
 async function triggerSync() {
   const res = await fetch("/sync", { method: "POST" });
+
   if (res.status === 409) {
-    const err = await res.json();
-    alert(err.detail || "A sync is already running.");
+    await refreshSyncLiveOnly();
+    await refreshDashboard();
     return;
   }
+
   if (!res.ok) {
     const txt = await res.text();
     alert("Sync error: " + txt);
@@ -200,34 +233,65 @@ function updateScrollableCue(el) {
   el.classList.toggle("has-overflow", hasOverflow);
 }
 
-async function loadRuntimeInfo(syncStatus = null) {
-  try {
-    const config = await fetchJson("/config");
-    const sync = syncStatus || (await fetchJson("/sync/status"));
+function renderSyncInfo(config, sync) {
+  const jql = config?.jira_jql || "N/A";
+  const sqlitePath = config?.sqlite_path || "N/A";
+  const pageSize = config?.jira_page_size ?? "N/A";
+  const autoSyncInterval = config?.auto_sync_interval_seconds;
+  const autoRefreshInterval = config?.auto_refresh_seconds;
 
-    const jql = config.jira_jql || "N/A";
-    const sqlitePath = config.sqlite_path || "N/A";
-    const pageSize = config.jira_page_size ?? "N/A";
-
-    runtimeLine.textContent = `JQL: ${jql}`;
-    runtimeLine.title = `JQL: ${jql}`;
-
-    const lastRunAt = fmtDateTime(sync.last_run_at);
-    const success =
-      sync.success === true
-        ? "success"
-        : sync.success === false
-          ? "failed"
-          : "unknown";
-    const upserted = fmtInt(sync.upserted);
-    const durationMs = fmtInt(sync.duration_ms);
-
-    syncLine.textContent = `Last sync: ${lastRunAt} • Status: ${success} • Upserted: ${upserted} • Duration: ${durationMs} ms • SQLite: ${sqlitePath} • Page size: ${pageSize}`;
-    syncLine.title = `Last sync: ${lastRunAt}\nStatus: ${success}\nUpserted: ${upserted}\nDuration: ${durationMs} ms\nSQLite: ${sqlitePath}\nPage size: ${pageSize}`;
-  } catch (e) {
-    runtimeLine.textContent = "Runtime info unavailable";
-    syncLine.textContent = "Sync info unavailable";
+  if (runtimeLine) {
+    runtimeLine.textContent = `JQL: ${jql} • SQLite: ${sqlitePath} • Page size: ${pageSize} • Refresh: ${autoRefreshInterval ?? refreshIntervalSeconds} s`;
+    runtimeLine.title = `JQL: ${jql}\nSQLite: ${sqlitePath}\nPage size: ${pageSize}\nRefresh: ${autoRefreshInterval ?? refreshIntervalSeconds} s`;
   }
+
+  if (refreshInfoInterval) {
+    refreshInfoInterval.textContent =
+      autoRefreshInterval !== null && autoRefreshInterval !== undefined
+        ? `${fmtInt(autoRefreshInterval)} s`
+        : `${fmtInt(refreshIntervalSeconds)} s`;
+  }
+
+  if (syncErrorText) {
+    const hasError = !!sync?.last_error;
+    syncErrorText.textContent = hasError ? String(sync.last_error) : "—";
+    syncErrorText.title = hasError ? String(sync.last_error) : "";
+  }
+
+  const lastRun = fmtTimeOnly(sync?.last_run_at);
+  const autoSyncText =
+    autoSyncInterval !== null && autoSyncInterval !== undefined
+      ? `${fmtInt(autoSyncInterval)} s`
+      : "—";
+
+  if (sync?.is_running) {
+    setSyncPill(
+      "warn",
+      "Sync: running",
+      `started ${lastRun} • Auto ${autoSyncText}`,
+    );
+    return;
+  }
+
+  if (sync?.success === true) {
+    setSyncPill(
+      "good",
+      "Sync: success",
+      `${lastRun} • ${fmtInt(sync.upserted)} issues • ${fmtInt(sync.duration_ms)} ms • Auto ${autoSyncText}`,
+    );
+    return;
+  }
+
+  if (sync?.success === false) {
+    setSyncPill(
+      "bad",
+      "Sync: failed",
+      `${lastRun} • ${fmtInt(sync.duration_ms)} ms • Auto ${autoSyncText}`,
+    );
+    return;
+  }
+
+  setSyncPill("warn", "Sync: idle", `Last ${lastRun} • Auto ${autoSyncText}`);
 }
 
 function getStatusFamilyColor(label, index) {
@@ -249,8 +313,6 @@ function getStatusFamilyColor(label, index) {
   ];
   return palette[index % palette.length];
 }
-
-let statusChartRendered = false;
 
 function renderStatusFamilyChart(data) {
   let families = Array.isArray(data?.families) ? data.families : [];
@@ -366,6 +428,117 @@ function renderStatusFamilyChart(data) {
   }
 }
 
+function renderSyncLive(live) {
+  if (!syncLiveBody) return;
+
+  const lines = Array.isArray(live?.lines) ? live.lines.slice(-3) : [];
+  const signature = JSON.stringify(lines);
+
+  if (signature === lastRenderedLiveSignature) {
+    return;
+  }
+  lastRenderedLiveSignature = signature;
+
+  syncLiveBody.innerHTML = "";
+
+  if (!lines.length) {
+    syncLiveBody.innerHTML = `
+      <div class="sync-live-line muted">No live sync logs yet</div>
+      <div class="sync-live-line muted">—</div>
+      <div class="sync-live-line muted">—</div>
+    `;
+    return;
+  }
+
+  for (const line of lines) {
+    const div = document.createElement("div");
+    div.className = "sync-live-line mono";
+
+    const lower = String(line).toLowerCase();
+    if (
+      lower.includes("failed") ||
+      lower.includes("error") ||
+      lower.includes("exception")
+    ) {
+      div.classList.add("sync-live-error");
+    } else if (lower.includes("finished") || lower.includes("success")) {
+      div.classList.add("sync-live-success");
+    } else if (
+      lower.includes("running") ||
+      lower.includes("started") ||
+      lower.includes("processed") ||
+      lower.includes("fetch") ||
+      lower.includes("loading")
+    ) {
+      div.classList.add("sync-live-running");
+    }
+
+    div.textContent = line;
+    div.title = line;
+    syncLiveBody.appendChild(div);
+  }
+
+  while (syncLiveBody.children.length < 3) {
+    const filler = document.createElement("div");
+    filler.className = "sync-live-line muted";
+    filler.textContent = "—";
+    syncLiveBody.appendChild(filler);
+  }
+}
+
+function applyRealtimeSyncState(sync, live) {
+  if (!sync) return;
+
+  lastSyncStatus = sync;
+
+  if (syncBtn) {
+    syncBtn.disabled = !!sync.is_running;
+    syncBtn.textContent = sync.is_running ? "Sync running…" : "Sync Jira";
+  }
+
+  renderSyncInfo(dashboardConfig, sync);
+
+  if (syncLiveBody) {
+    renderSyncLive(live);
+  }
+}
+
+function startLiveRefresh(intervalMs) {
+  const parsed = Number(intervalMs);
+  const safeMs = Number.isFinite(parsed) && parsed > 250 ? parsed : 4000;
+
+  if (liveRefreshTimer && liveRefreshIntervalMs === safeMs) {
+    return;
+  }
+
+  liveRefreshIntervalMs = safeMs;
+
+  if (liveRefreshTimer) {
+    clearInterval(liveRefreshTimer);
+  }
+
+  liveRefreshTimer = setInterval(refreshSyncLiveOnly, safeMs);
+}
+
+async function refreshSyncLiveOnly() {
+  try {
+    const [live, sync] = await Promise.all([
+      fetchSyncLive(),
+      fetchSyncStatus(),
+    ]);
+
+    applyRealtimeSyncState(sync, live);
+
+    if (live?.is_running || sync?.is_running) {
+      startLiveRefresh(800);
+    } else {
+      startLiveRefresh(4000);
+    }
+  } catch (e) {
+    console.error("refreshSyncLiveOnly failed", e);
+  }
+}
+
 async function refreshDashboard() {
   try {
     clearError();
@@ -385,6 +558,15 @@ async function refreshDashboard() {
       fetchJson("/stats/status_family_distribution"),
       fetchSyncStatus(),
     ]);
+
+    const config = dashboardConfig;
+
+    if (
+      config?.auto_refresh_seconds &&
+      Number(config.auto_refresh_seconds) !== refreshIntervalSeconds
+    ) {
+      startAutoRefresh(config.auto_refresh_seconds);
+    }
 
     kpiTotal.textContent = fmtInt(overview.total_tickets);
     kpiOpen.textContent = fmtInt(overview.open_tickets);
@@ -504,12 +686,13 @@ async function refreshDashboard() {
     timeByProjectMeta.textContent = `${projects.length} projects • Sorted by hours`;
 
     if (!projects.length) {
-      timeByProjectBody.innerHTML = `<tr><td colspan="6" class="muted">No data</td></tr>`;
+      timeByProjectBody.innerHTML = `<tr><td colspan="7" class="muted">No data</td></tr>`;
     } else {
       for (const row of projects) {
         const totalHours = Number(row.time_spent_hours || 0);
         const totalIssues = Number(row.total_issues || 0);
         const avg = totalIssues > 0 ? totalHours / totalIssues : 0;
+        const avgResolution = row.avg_resolution_hours;
 
         const tr = document.createElement("tr");
         tr.className = effortRowClass(totalHours);
@@ -536,6 +719,14 @@ async function refreshDashboard() {
         tdAvg.className = "right mono";
         tdAvg.textContent = fmtHours1(avg);
 
+        const tdAvgResolution = document.createElement("td");
+        tdAvgResolution.className = "right mono";
+        tdAvgResolution.textContent = fmtHours1(avgResolution);
+        tdAvgResolution.title =
+          row.resolved_issues_with_dates > 0
+            ? `${fmtInt(row.resolved_issues_with_dates)} resolved tickets with valid dates`
+            : "No resolved tickets with valid created/resolved dates";
+
         const tdTickets = document.createElement("td");
         tdTickets.className = "right mono";
         tdTickets.textContent = fmtInt(totalIssues);
@@ -545,6 +736,7 @@ async function refreshDashboard() {
         tr.appendChild(tdClosed);
         tr.appendChild(tdHours);
         tr.appendChild(tdAvg);
+        tr.appendChild(tdAvgResolution);
         tr.appendChild(tdTickets);
 
         timeByProjectBody.appendChild(tr);
@@ -556,19 +748,24 @@ async function refreshDashboard() {
     requestAnimationFrame(() => updateScrollableCue(timeByProjectWrap));
 
     const t = new Date();
-    lastRefresh.textContent = t.toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
+    if (lastRefresh) {
+      lastRefresh.textContent = t.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+    }
 
-    await loadRuntimeInfo(syncStatus);
+    renderSyncInfo(config, syncStatus);
   } catch (e) {
+    console.error("refreshDashboard failed", e);
     showError(String(e));
     try {
       const syncStatus = await fetchSyncStatus();
-      await loadRuntimeInfo(syncStatus);
-    } catch (_) {}
+      renderSyncInfo(dashboardConfig, syncStatus);
+    } catch (innerError) {
+      console.error("Fallback refresh failed", innerError);
+    }
   }
 }
 
@@ -578,6 +775,7 @@ syncBtn.addEventListener("click", async () => {
   try {
     await triggerSync();
   } finally {
+    setTimeout(refreshSyncLiveOnly, 200);
     setTimeout(refreshDashboard, 700);
   }
 });
@@ -593,5 +791,24 @@ toggleClosed.addEventListener("change", () => {
   refreshDashboard();
 });
 
-refreshDashboard();
-setInterval(refreshDashboard, 10000);
+async function bootstrapDashboard() {
+  try {
+    dashboardConfig = await fetchJson("/config");
+    startAutoRefresh(dashboardConfig.auto_refresh_seconds);
+  } catch (e) {
+    console.error("Failed to load /config", e);
+    dashboardConfig = null;
+    startAutoRefresh(10);
+  }
+
+  startLiveRefresh(4000);
+  refreshSyncLiveOnly();
+
+  try {
+    await refreshDashboard();
+  } catch (e) {
+    console.error("Initial refreshDashboard failed", e);
+  }
+}
+
+bootstrapDashboard();

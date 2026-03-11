@@ -12,33 +12,31 @@
         <div class="brand">
           <div class="title">Support Monitoring Dashboard</div>
           <div class="subtitle">
-            Local SQLite analytics • Auto-refresh every 10s
-          </div>
-          <div
-            id="runtimeLine"
-            class="runtime-line"
-            title="Runtime information"
-          >
-            Loading runtime info…
-          </div>
-          <div id="syncLine" class="runtime-line" title="Last sync details">
-            Loading sync info…
+            Local SQLite analytics • Auto-refresh every
+            <span id="refreshInfoInterval">10 s</span>
           </div>
         </div>
 
         <div class="header-right">
           <button id="syncBtn" class="btn">Sync Jira</button>
 
-          <div id="syncPill" class="pill" title="Last sync status">
+          <div
+            id="syncPill"
+            class="pill sync-pill-rich"
+            title="Last sync status"
+          >
             <span id="syncDot" class="dot warn"></span>
             <span id="syncText">Sync: unknown</span>
             <span id="syncMeta" class="mono">—</span>
           </div>
 
-          <div id="refreshPill" class="pill" title="Last refresh time">
-            <span class="dot good"></span>
-            <span>Refresh</span>
-            <span id="lastRefresh" class="mono">—</span>
+          <div class="sync-live-box">
+            <div class="sync-live-title">JIRA sync live</div>
+            <div id="syncLiveBody" class="sync-live-body">
+              <div class="sync-live-line muted">Waiting for sync…</div>
+              <div class="sync-live-line muted">—</div>
+              <div class="sync-live-line muted">—</div>
+            </div>
           </div>
         </div>
       </div>
@@ -174,17 +172,18 @@
               <table>
                 <thead>
                   <tr>
-                    <th style="width: 26%">Project</th>
-                    <th class="right" style="width: 12%">Open</th>
-                    <th class="right" style="width: 12%">Closed</th>
-                    <th class="right" style="width: 20%">Total Hours</th>
-                    <th class="right" style="width: 18%">Avg / Ticket</th>
+                    <th style="width: 20%">Project</th>
+                    <th class="right" style="width: 10%">Open</th>
+                    <th class="right" style="width: 10%">Closed</th>
+                    <th class="right" style="width: 16%">Total Hours</th>
+                    <th class="right" style="width: 14%">Avg / Ticket</th>
+                    <th class="right" style="width: 18%">Avg Resolution</th>
                     <th class="right" style="width: 12%">Tickets</th>
                   </tr>
                 </thead>
                 <tbody id="timeByProjectBody">
                   <tr>
-                    <td colspan="6" class="muted">Loading…</td>
+                    <td colspan="7" class="muted">Loading…</td>
                   </tr>
                 </tbody>
               </table>
@@ -197,15 +196,13 @@
       </div>
 
       <div class="footer">
-        <div class="truncate">
-          Endpoints: <span class="mono">/stats/overview</span> •
-          <span class="mono">/stats/by_assignee</span> •
-          <span class="mono">/stats/top_oldest_open</span> •
-          <span class="mono">/stats/time_by_project</span> •
-          <span class="mono">/stats/status_family_distribution</span> •
-          <span class="mono">/config</span>
-        </div>
-        <div class="mono" id="errorLine"></div>
+        <span id="runtimeLine" class="mono truncate">
+          Loading runtime info…
+        </span>
+
+        <span id="syncErrorText" class="mono"></span>
+
+        <span id="errorLine" class="mono"></span>
       </div>
     </div>
 
